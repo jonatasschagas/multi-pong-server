@@ -1,0 +1,2 @@
+# Generate package
+mvn package
