@@ -2,9 +2,6 @@ package com.jc.multipong.bootstrap.entities;
 
 import com.jc.multipong.bootstrap.utils.MathUtils;
 
-/**
- * Created by jonataschagas on 25/01/17.
- */
 public class GameLogic {
 
     public String type = "GameLogic";
@@ -12,47 +9,35 @@ public class GameLogic {
     public SimpleGameObject paddle1;
     public SimpleGameObject paddle2;
 
-    public PaddleMovementRequest[] paddle1Replay;
-    public PaddleMovementRequest[] paddle2Replay;
-
-    // how much the ball moves at every step
-    public float step = 0.05f;
-
-    // current angle the ball bounces
-    public float currentAngle = 45f;
-
     // bounds
     public int lowerBoundGridX = 0;
-    public int higherBoundGridX = 11;
+    public int higherBoundGridX = 10;
     public int lowerBoundGridY = 0;
-    public int higherBoundGridY = 11;
+    public int higherBoundGridY = 10;
 
-    // fake bools (used to make code portable between C# and Java
-    private int TRUE = 1;
-    private int FALSE = 0;
+    // fake int booleans
+    public boolean hasStarted = false;
+    public boolean gameOver = false;
+    public boolean incrementX = true;
+    public boolean incrementY = true;
 
-    // fake int bools
-    public int hasStarted;
-    public int gameOver;
-    public int incrementX;
-    public int incrementY;
-
-    public int player1Connected = FALSE;
-    public int player2Connected = FALSE;
+    public boolean player1Connected = false;
+    public boolean player2Connected = false;
 
     // winner == 1 -> paddle 1 won
     // winner == 2 -> paddle 2 won
     public int winner;
 
     public long currentTick = 0;
+    public static int FPS = 60;
 
     public GameLogic() {
         ball = new SimpleGameObject ();
         paddle1 = new SimpleGameObject ();
         paddle2 = new SimpleGameObject ();
-        incrementX = TRUE;
-        incrementY = TRUE;
-        hasStarted = FALSE;
+        incrementX = true;
+        incrementY = true;
+        hasStarted = false;
         paddle1.x = higherBoundGridX/2;
         paddle1.y = 0;
         ball.x = higherBoundGridX/2;
@@ -62,27 +47,27 @@ public class GameLogic {
         currentTick = 0;
     }
 
-    public void ManuallyMoveBall(float x, float y){
-        if 	(gameOver == TRUE) {
+    public void ManuallyMoveBall(int x, int y){
+        if 	(gameOver) {
             return;
         }
         ball.x = x;
         ball.y = y;
     }
 
-    public void MovePaddle1(float x, float y){
-        if (gameOver == TRUE) {
+    public void MovePaddle1(int x, int y){
+        if (gameOver) {
             return;
         }
         paddle1.x = x;
         paddle1.y = y;
-        if (hasStarted == FALSE) {
+        if (hasStarted == false) {
             ManuallyMoveBall (x, y);
         }
     }
 
-    public void MovePaddle2(float x, float y){
-        if (gameOver == TRUE) {
+    public void MovePaddle2(int x, int y){
+        if (gameOver) {
             return;
         }
         paddle2.x = x;
@@ -106,26 +91,25 @@ public class GameLogic {
     }
 
     public void StartGame() {
-        hasStarted = TRUE;
+        hasStarted = true;
     }
 
-    public void MoveBall() {
-
-        if (gameOver == TRUE || hasStarted == FALSE) {
-            return;
-        }
+    public void Update() {
 
         currentTick++;
 
-        if ((ball.x + 1) > higherBoundGridX) {
-            incrementX = FALSE;
-        } else if(ball.x < lowerBoundGridX) {
-            incrementX = TRUE;
-        }
+        // if one second has passed
+        if(currentTick % FPS == 0) {
 
-        if ((ball.y + 1) > higherBoundGridY) {
-            incrementY = FALSE;
-			/*if (HasCollided(paddle2.x, ball.x) == TRUE) {
+            if (ball.x >= higherBoundGridX) {
+                incrementX = false;
+            } else if(ball.x <= lowerBoundGridX) {
+                incrementX = true;
+            }
+
+            if (ball.y >= higherBoundGridY) {
+                incrementY = false;
+				/*if (HasCollided(paddle2.x, ball.x) == TRUE) {
 				//currentAngle = MathUtils.GetRandom (10f, 60f);
 				currentAngle = 45f;
 			} else {
@@ -135,10 +119,10 @@ public class GameLogic {
 				return;
 			}*/
 
-        } else if(ball.y < lowerBoundGridY) {
-            incrementY = TRUE;
-            // paddle hit the ball
-			/*if (HasCollided(paddle1.x, ball.x) == TRUE) {
+            } else if(ball.y <= lowerBoundGridY) {
+                incrementY = true;
+                // paddle hit the ball
+				/*if (HasCollided(paddle1.x, ball.x) == TRUE) {
 				//currentAngle = MathUtils.GetRandom (10f, 60f);
 				currentAngle = 45f;
 			} else {
@@ -148,26 +132,27 @@ public class GameLogic {
 				return;
 			}*/
 
-        }
+            }
 
-        double prevX = ball.x;
-        if (incrementX == TRUE) {
-            ball.x += step;
-        } else {
-            ball.x -= step;
-        }
+            int prevX = ball.x;
+            if (incrementX) {
+                ball.x += 1;
+            } else {
+                ball.x -= 1;
+            }
 
-        float deltaX = MathUtils.Abs(ball.x,prevX);
-        if (incrementY == TRUE) {
-            ball.y+= MathUtils.Tan (MathUtils.DegreesToRad(currentAngle)) * deltaX;
-        } else {
-            ball.y-= MathUtils.Tan (MathUtils.DegreesToRad(currentAngle)) * deltaX;
+            int deltaX = (int)MathUtils.Abs(ball.x,prevX);
+            if (incrementY) {
+                ball.y+= (int)MathUtils.Tan (MathUtils.DegreesToRad(45f)) * deltaX;
+            } else {
+                ball.y-= (int)MathUtils.Tan (MathUtils.DegreesToRad(45f)) * deltaX;
+            }
         }
 
     }
 
-    int HasCollided(float xPaddle, float xBall) {
-        return xBall >= xPaddle && xBall <= xPaddle + 1 || xBall + 1 >= xPaddle && xBall + 1 <= xPaddle + 1 ? TRUE : FALSE;
+    boolean HasCollided(float xPaddle, float xBall) {
+        return xBall >= xPaddle && xBall <= xPaddle + 1 || xBall + 1 >= xPaddle && xBall + 1 <= xPaddle + 1 ? true : false;
     }
 
 }

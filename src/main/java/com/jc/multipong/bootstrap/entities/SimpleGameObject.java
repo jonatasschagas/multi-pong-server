@@ -5,7 +5,7 @@ package com.jc.multipong.bootstrap.entities;
  */
 public class SimpleGameObject {
 
-    public float x;
-    public float y;
+    public int x;
+    public int y;
 
 }

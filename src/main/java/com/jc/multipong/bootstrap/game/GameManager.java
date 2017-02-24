@@ -1,15 +1,18 @@
 package com.jc.multipong.bootstrap.game;
 
 import com.jc.multipong.bootstrap.entities.*;
-import com.jc.multipong.bootstrap.utils.SocketWrapper;
+import com.jc.multipong.bootstrap.nio.ServerThread;
+import com.jc.multipong.bootstrap.threads.WorkerThread;
+import com.jc.multipong.bootstrap.utils.JsonUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.channels.SocketChannel;
 import java.util.*;
 import java.util.concurrent.LinkedBlockingQueue;
 
 /**
- * Created by jonataschagas on 25/01/17.
+ * Class responsible for handling the game commands and managing the game sessions.
  */
 public class GameManager {
 
@@ -17,118 +20,155 @@ public class GameManager {
     private Map<String, Game> gameSessions = new HashMap<String, Game>();
     private Queue<String> openedMatches = new LinkedBlockingQueue<String>();
 
-
-    public GameConnectionResponse connect(SocketWrapper clientSocket, GameConnectionRequest gameConnectionRequest) {
+    /**
+     * Connects a client to a game match if one already exists. Otherwise it creates a new match
+     * and adds it to the "openedMatches" queue.
+     *
+     * @param clientSocket
+     * @param gameConnectionRequest
+     * @return
+     */
+    public GameConnectionResponse connect(SocketChannel clientSocket, GameConnectionRequest gameConnectionRequest) {
         String gameId = openedMatches.poll();
-        boolean newMatch = false;
+        Game game;
         if (gameId == null) {
-            gameId = UUID.randomUUID().toString();
-            newMatch = true;
+            game = createGameMatch();
+        } else {
+            game = gameSessions.get(gameId);
         }
-        Game game = gameSessions.get(gameId);
-        if (game == null) {
-            // creates new gameSession
-            game = new Game();
-            Map<Short, SocketWrapper> socketMap = new HashMap<Short, SocketWrapper>();
-            game.setClientSockets(socketMap);
-            game.setInputs(new HashMap<>());
-            game.setGameLogic(new GameLogic());
-        }
+
+        gameId = game.getGameId();
         GameConnectionResponse connectResponse = new GameConnectionResponse();
         connectResponse.gameId = gameId;
-        short paddleNumber = -1;
-        if (newMatch) {
+
+        short paddleNumber;
+        if (!game.getGameLogic().player1Connected) {
             paddleNumber = (short) 1;
+            game.getGameLogic().player1Connected = true;
         } else {
             paddleNumber = (short) 2;
+            game.getGameLogic().player2Connected = true;
         }
         game.getClientSockets().put(paddleNumber, clientSocket);
         connectResponse.playerNumber = paddleNumber;
-        gameSessions.put(gameId, game);
-        logger.info("connect: game: " + gameId);
-        if (newMatch) {
-            openedMatches.add(gameId);
-        } else {
-            game.getGameLogic().player1Connected = 1;
-            game.getGameLogic().player2Connected = 1;
-        }
+        logger.info("connect: game: " + gameId + ", paddle number:" + paddleNumber);
+
         return connectResponse;
     }
 
-    public void registerInput(final PaddleMovementRequest paddleMovement) {
-        // send the  paddle movement to the other player
-        Game game = gameSessions.get(paddleMovement.gameId);
-        if (game != null) {
-            // queuing the inputs
-            List<PaddleMovementRequest> tickInputsList = game.getInputs().get(paddleMovement.tick);
-            if (tickInputsList == null) {
-                tickInputsList = new ArrayList<>();
-            }
-            tickInputsList.add(paddleMovement);
-            game.getInputs().put(paddleMovement.tick, tickInputsList);
-            // pass the paddle movement to the other player
-            // broadcastMessageToOtherPlayers(paddleMovement.playerNumber, paddleMovement, game);
+    /**
+     * Insures that a match will be created **only** if there isn't a match created already
+     *
+     * @return
+     */
+    private synchronized Game createGameMatch() {
+        // makes lookup again in case another match has been created already
+        String gameId = openedMatches.poll();
+        Game game = null;
+        if (gameId != null) {
+            return gameSessions.get(gameId);
+        }
+
+        gameId = UUID.randomUUID().toString();
+        game = new Game();
+        Map<Short, SocketChannel> socketMap = new HashMap<Short, SocketChannel>();
+        game.setClientSockets(socketMap);
+        game.setInputs(new HashMap<>());
+        game.setGameLogic(new GameLogic());
+        game.setGameId(gameId);
+        gameSessions.put(gameId, game);
+        openedMatches.add(gameId);
+        return game;
+    }
+
+    /**
+     * Stores all the inputs from a given tick into a list and "moves" the paddle in the game
+     *
+     * @param input
+     */
+    public void registerInput(final PaddleMovementRequest input) {
+        Game game = gameSessions.get(input.gameId);
+        if (game == null) {
+            logger.warn("Unable to find game object for id: " + input.gameId);
+            return;
+        }
+        GameLogic gameLogic = game.getGameLogic();
+        Map<Long, List<PaddleMovementRequest>> inputs = game.getInputs();
+        SimpleGameObject paddle = input.paddle;
+
+        List<PaddleMovementRequest> inputsFromThisTick = inputs.get(input.tick);
+        if (inputsFromThisTick == null) {
+            inputsFromThisTick = new ArrayList<>();
+        }
+        inputsFromThisTick.add(input);
+        if (input.playerNumber == 1) {
+            gameLogic.MovePaddle1(paddle.x, paddle.y);
+        } else {
+            gameLogic.MovePaddle2(paddle.x, paddle.y);
         }
     }
 
+    /**
+     * Advances the state of the game in the server by fast forwarding to the current tick of the game client. After
+     * the state of the game in the server is in sync with the client tick, the state of the server is returned
+     * to the client for synchronization. In case the game client is behind the server's current tick,
+     * the current state of the server is returned.*
+     *
+     * @param gameId
+     * @param currentClientTick
+     * @return
+     */
     public GameLogic getGameState(String gameId, long currentClientTick) {
         Game game = gameSessions.get(gameId);
         if (game == null) {
-            throw new RuntimeException("cannot find game with gameId: " + gameId);
+            logger.warn("cannot find game with gameId: " + gameId);
+            return null;
         }
-        GameLogic serverState = game.getGameLogic();
-        long serverStateCurrentTick = serverState.currentTick;
-
-        serverState.paddle1Replay = getReplay(game, (short)1);
-        serverState.paddle2Replay = getReplay(game, (short)2);
-
-        if (currentClientTick < serverStateCurrentTick) {
-            // forwards the client to the current position
-            return serverState;
+        GameLogic gameLogic = game.getGameLogic();
+        long currentServerTick = gameLogic.currentTick;
+        if (currentClientTick < currentServerTick) {
+            // forwards the client to the current state of the game
+            return gameLogic;
         } else {
+            // gets the current tick again, in case another thread has advanced the game
+            currentServerTick = gameLogic.currentTick;
+            Map<Long, List<PaddleMovementRequest>> inputs = game.getInputs();
             // fast forward to the client's tick
-            for (long tick = serverStateCurrentTick; tick <= currentClientTick; tick++) {
+            for (long tick = currentServerTick; tick <= currentClientTick; tick++) {
                 // process inputs for this tick if any
-                List<PaddleMovementRequest> inputsFromTick = game.getInputs().get(tick);
+                List<PaddleMovementRequest> inputsFromTick = inputs.get(tick);
                 if (inputsFromTick != null) {
-                    for (PaddleMovementRequest paddleMovementRequest : inputsFromTick) {
-                        if (paddleMovementRequest.playerNumber == 1) {
-                            serverState.MovePaddle1(paddleMovementRequest.paddle.x, paddleMovementRequest.paddle.y);
+                    for (PaddleMovementRequest input : inputsFromTick) {
+                        SimpleGameObject paddle = input.paddle;
+                        if (input.playerNumber == 1) {
+                            gameLogic.MovePaddle1(paddle.x, paddle.y);
                         } else {
-                            serverState.MovePaddle2(paddleMovementRequest.paddle.x, paddleMovementRequest.paddle.y);
+                            gameLogic.MovePaddle2(paddle.x, paddle.y);
                         }
                     }
                 }
                 // advance the game
-                serverState.MoveBall();
+                gameLogic.Update();
             }
-            return serverState;
+            return gameLogic;
         }
     }
 
-    private PaddleMovementRequest[] getReplay(Game game, short paddleNumber) {
-        Map<Long, List<PaddleMovementRequest>> inputs = game.getInputs();
-        long serverStateCurrentTick = game.getGameLogic().currentTick;
-        List<PaddleMovementRequest> opponentReplay = new ArrayList<>();
-        for(long tick = serverStateCurrentTick - 5; tick < serverStateCurrentTick; tick++) {
-            List<PaddleMovementRequest> inputsPerTicks = inputs.get(tick);
-            if(inputsPerTicks != null) {
-                for(PaddleMovementRequest paddleMovementRequest : inputsPerTicks) {
-                    if(paddleMovementRequest.playerNumber == paddleNumber) {
-                        opponentReplay.add(paddleMovementRequest);
-                    }
-                }
-            }
-        }
-        PaddleMovementRequest[] opponentReplayArr = new PaddleMovementRequest[opponentReplay.size()];
-        return opponentReplay.toArray(opponentReplayArr);
-    }
-
+    /**
+     * Starts the game in the server and broadcasts to the clients a message that tells them to start the game.
+     *
+     * @param startGameRequest
+     * @return
+     */
     public StartGameResponse startGameSign(StartGameRequest startGameRequest) {
         Game game = gameSessions.get(startGameRequest.gameId);
-        game.getGameLogic().StartGame();
         if (game == null) {
-            throw new RuntimeException("cannot find game with gameId: " + startGameRequest.gameId);
+            logger.warn("cannot find game with gameId: " + startGameRequest.gameId);
+            return null;
+        }
+        GameLogic gameLogic = game.getGameLogic();
+        if (!gameLogic.hasStarted) {
+            gameLogic.StartGame();
         }
         StartGameResponse startGameResponse = new StartGameResponse();
         // send the start message to the other players
@@ -140,7 +180,10 @@ public class GameManager {
     private void broadcastMessageToOtherPlayers(short senderPlayerNumber, Object message, Game game) {
         game.getClientSockets().keySet().stream().forEach(playerNumber -> {
             if (playerNumber != senderPlayerNumber) {
-                game.getClientSockets().get(playerNumber).writeMessage(message);
+                ServerThread.getInstance().send(
+                        game.getClientSockets().get(playerNumber),
+                        JsonUtils.toJson(message)
+                );
             }
         });
     }
